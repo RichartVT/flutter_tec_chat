@@ -1,9 +1,7 @@
 // lib/features/chats/presentation/screens/chats_list_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-// 👈 para kIsWeb
 import 'package:flutter/material.dart';
-import 'package:flutter_tec_chat/contacts/add_contact_screen.dart';
 
 import 'chat_detail_screen.dart';
 import 'group_create_screen.dart';
@@ -11,12 +9,54 @@ import '../../../../contacts/contacts_list_screen.dart';
 import '../../../../data/models/app_user.dart';
 import '../../../../profile/profile_screen.dart';
 
-class ChatsListScreen extends StatelessWidget {
+class ChatsListScreen extends StatefulWidget {
   const ChatsListScreen({super.key});
 
   @override
+  State<ChatsListScreen> createState() => _ChatsListScreenState();
+}
+
+class _ChatsListScreenState extends State<ChatsListScreen> {
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+
+  User? _firebaseUser;
+  bool _isTeacher = false;
+  bool _loadingRole = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _firebaseUser = _auth.currentUser;
+    _loadUserRole();
+  }
+
+  Future<void> _loadUserRole() async {
+    final user = _firebaseUser ?? _auth.currentUser;
+    if (user == null) {
+      setState(() => _loadingRole = false);
+      return;
+    }
+
+    try {
+      final snap = await _db.collection('users').doc(user.uid).get();
+      final data = snap.data();
+      if (data != null) {
+        final role = data['role'] as String?;
+        _isTeacher = role == 'teacher';
+      }
+    } catch (e) {
+      debugPrint('Error cargando rol de usuario: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _loadingRole = false);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final currentUser = _firebaseUser ?? _auth.currentUser;
 
     if (currentUser == null) {
       return const Scaffold(
@@ -31,63 +71,7 @@ class ChatsListScreen extends StatelessWidget {
 
     final uid = currentUser.uid;
 
-    // // 🔒 En Web: NO usamos Firestore (evitamos errores de "client is offline")
-    // if (kIsWeb) {
-    //   return Scaffold(
-    //     appBar: AppBar(
-    //       title: const Text('Conversaciones'),
-    //       actions: [
-    //         IconButton(
-    //           icon: const Icon(Icons.contacts),
-    //           tooltip: 'Contactos',
-    //           onPressed: () {
-    //             Navigator.push(
-    //               context,
-    //               MaterialPageRoute(builder: (_) => const ContactsListScreen()),
-    //             );
-    //           },
-    //         ),
-    //         IconButton(
-    //           icon: const Icon(Icons.person),
-    //           tooltip: 'Perfil',
-    //           onPressed: () {
-    //             Navigator.push(
-    //               context,
-    //               MaterialPageRoute(builder: (_) => const ProfileScreen()),
-    //             );
-    //           },
-    //         ),
-    //       ],
-    //     ),
-    //     body: const Center(
-    //       child: Padding(
-    //         padding: EdgeInsets.all(24.0),
-    //         child: Text(
-    //           'En la versión Web de demo no se cargan conversaciones '
-    //           'reales desde Firestore.\n\n'
-    //           'Usa la app en un dispositivo Android o iOS real para '
-    //           'probar los chats en tiempo real.',
-    //           textAlign: TextAlign.center,
-    //         ),
-    //       ),
-    //     ),
-    //     floatingActionButton: FloatingActionButton(
-    //       onPressed: () {
-    //         ScaffoldMessenger.of(context).showSnackBar(
-    //           const SnackBar(
-    //             content: Text(
-    //               'Crear chats está deshabilitado en la versión Web de demo.',
-    //             ),
-    //           ),
-    //         );
-    //       },
-    //       child: const Icon(Icons.group_add),
-    //     ),
-    //   );
-    // }
-
-    // 📱 Móviles (Android / iOS): Firestore normal
-    final chatsStream = FirebaseFirestore.instance
+    final chatsStream = _db
         .collection('chats')
         .where('members', arrayContains: uid)
         .orderBy('lastMessageAt', descending: true)
@@ -156,15 +140,19 @@ class ChatsListScreen extends StatelessWidget {
           );
         },
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const AddContactScreen()),
-          );
-        },
-        child: const Icon(Icons.person_add),
-      ),
+
+      // 👇 Solo lo ve el profesor (role == 'teacher')
+      floatingActionButton: _isTeacher
+          ? FloatingActionButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const GroupCreateScreen()),
+                );
+              },
+              child: const Icon(Icons.group_add),
+            )
+          : null,
     );
   }
 }
