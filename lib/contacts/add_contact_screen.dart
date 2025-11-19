@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tec_chat/features/chats/presentation/screens/chat_detail_screen.dart';
+
+import '../data/models/app_user.dart';
 
 class AddContactScreen extends StatefulWidget {
   const AddContactScreen({super.key});
@@ -62,6 +65,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
     setState(() => _adding = true);
 
     try {
+      // 1) Buscar usuario destino en colección users
       Query<Map<String, dynamic>> query =
           _firestore.collection('users') as Query<Map<String, dynamic>>;
 
@@ -69,7 +73,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
         final phone = _normalizePhone(rawPhone);
         query = query.where('phoneNumber', isEqualTo: phone);
       } else {
-        query = query.where('emailTec', isEqualTo: rawEmail);
+        query = query.where('emailTec', isEqualTo: rawEmail.toLowerCase());
       }
 
       final snap = await query.limit(1).get();
@@ -83,6 +87,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
 
       final userDoc = snap.docs.first;
       final foundUid = userDoc.id;
+      final foundData = userDoc.data();
 
       if (foundUid == currentUser.uid) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -91,7 +96,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
         return;
       }
 
-      // Verificar si ya existe contacto
+      // 2) Crear contacto si no existe
       final existing = await _firestore
           .collection('contacts')
           .where('ownerId', isEqualTo: currentUser.uid)
@@ -99,25 +104,53 @@ class _AddContactScreenState extends State<AddContactScreen> {
           .limit(1)
           .get();
 
-      if (existing.docs.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Este contacto ya está en tu lista.')),
-        );
-        return;
+      if (existing.docs.isEmpty) {
+        await _firestore.collection('contacts').add({
+          'ownerId': currentUser.uid,
+          'contactId': foundUid,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
       }
 
-      await _firestore.collection('contacts').add({
-        'ownerId': currentUser.uid,
-        'contactId': foundUid,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      // 3) Crear (o recuperar) chat privado entre los dos
+      final members = [currentUser.uid, foundUid]..sort();
+      final chatId = members.join('_'); // uidA_uidB
 
+      final chatRef = _firestore.collection('chats').doc(chatId);
+      final chatSnap = await chatRef.get();
+
+      if (!chatSnap.exists) {
+        await chatRef.set({
+          'id': chatId,
+          'isGroup': false,
+          'members': members,
+          'title': null,
+          'createdBy': currentUser.uid,
+          'createdAt': FieldValue.serverTimestamp(),
+          'lastMessage': null,
+          'lastMessageAt': null,
+        });
+      }
+
+      // 4) Navegar directo al chat recién creado
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Contacto agregado correctamente.')),
+
+      final otherUser = AppUser.fromMap(foundData, foundUid);
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatDetailScreen(
+            chatId: chatId,
+            isGroup: false,
+            otherUser: otherUser,
+          ),
+        ),
       );
 
-      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Contacto agregado, abriendo chat...')),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(

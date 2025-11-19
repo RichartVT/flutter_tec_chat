@@ -1,8 +1,9 @@
 // lib/features/chats/presentation/screens/chats_list_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart'; // 👈 para kIsWeb
+// 👈 para kIsWeb
 import 'package:flutter/material.dart';
+import 'package:flutter_tec_chat/contacts/add_contact_screen.dart';
 
 import 'chat_detail_screen.dart';
 import 'group_create_screen.dart';
@@ -30,60 +31,60 @@ class ChatsListScreen extends StatelessWidget {
 
     final uid = currentUser.uid;
 
-    // 🔒 En Web: NO usamos Firestore (evitamos errores de "client is offline")
-    if (kIsWeb) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Conversaciones'),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.contacts),
-              tooltip: 'Contactos',
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ContactsListScreen()),
-                );
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.person),
-              tooltip: 'Perfil',
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-            ),
-          ],
-        ),
-        body: const Center(
-          child: Padding(
-            padding: EdgeInsets.all(24.0),
-            child: Text(
-              'En la versión Web de demo no se cargan conversaciones '
-              'reales desde Firestore.\n\n'
-              'Usa la app en un dispositivo Android o iOS real para '
-              'probar los chats en tiempo real.',
-              textAlign: TextAlign.center,
-            ),
-          ),
-        ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Crear chats está deshabilitado en la versión Web de demo.',
-                ),
-              ),
-            );
-          },
-          child: const Icon(Icons.group_add),
-        ),
-      );
-    }
+    // // 🔒 En Web: NO usamos Firestore (evitamos errores de "client is offline")
+    // if (kIsWeb) {
+    //   return Scaffold(
+    //     appBar: AppBar(
+    //       title: const Text('Conversaciones'),
+    //       actions: [
+    //         IconButton(
+    //           icon: const Icon(Icons.contacts),
+    //           tooltip: 'Contactos',
+    //           onPressed: () {
+    //             Navigator.push(
+    //               context,
+    //               MaterialPageRoute(builder: (_) => const ContactsListScreen()),
+    //             );
+    //           },
+    //         ),
+    //         IconButton(
+    //           icon: const Icon(Icons.person),
+    //           tooltip: 'Perfil',
+    //           onPressed: () {
+    //             Navigator.push(
+    //               context,
+    //               MaterialPageRoute(builder: (_) => const ProfileScreen()),
+    //             );
+    //           },
+    //         ),
+    //       ],
+    //     ),
+    //     body: const Center(
+    //       child: Padding(
+    //         padding: EdgeInsets.all(24.0),
+    //         child: Text(
+    //           'En la versión Web de demo no se cargan conversaciones '
+    //           'reales desde Firestore.\n\n'
+    //           'Usa la app en un dispositivo Android o iOS real para '
+    //           'probar los chats en tiempo real.',
+    //           textAlign: TextAlign.center,
+    //         ),
+    //       ),
+    //     ),
+    //     floatingActionButton: FloatingActionButton(
+    //       onPressed: () {
+    //         ScaffoldMessenger.of(context).showSnackBar(
+    //           const SnackBar(
+    //             content: Text(
+    //               'Crear chats está deshabilitado en la versión Web de demo.',
+    //             ),
+    //           ),
+    //         );
+    //       },
+    //       child: const Icon(Icons.group_add),
+    //     ),
+    //   );
+    // }
 
     // 📱 Móviles (Android / iOS): Firestore normal
     final chatsStream = FirebaseFirestore.instance
@@ -159,10 +160,10 @@ class ChatsListScreen extends StatelessWidget {
         onPressed: () {
           Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const GroupCreateScreen()),
+            MaterialPageRoute(builder: (_) => const AddContactScreen()),
           );
         },
-        child: const Icon(Icons.group_add),
+        child: const Icon(Icons.person_add),
       ),
     );
   }

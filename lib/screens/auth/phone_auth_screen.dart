@@ -239,14 +239,14 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   Future<void> _ensureUserDocument(User? user) async {
     if (user == null) return;
 
-    // 👇 IMPORTANTE: para evitar el error "client is offline" en Web
-    if (kIsWeb) {
-      debugPrint(
-        'Saltando Firestore en Web (modo demo). '
-        'El usuario se autenticó pero no se guarda en collection users.',
-      );
-      return;
-    }
+    // // 👇 IMPORTANTE: para evitar el error "client is offline" en Web
+    // if (kIsWeb) {
+    //   debugPrint(
+    //     'Saltando Firestore en Web (modo demo). '
+    //     'El usuario se autenticó pero no se guarda en collection users.',
+    //   );
+    //   return;
+    // }
 
     try {
       final docRef = _firestore.collection('users').doc(user.uid);

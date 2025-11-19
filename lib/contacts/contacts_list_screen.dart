@@ -22,7 +22,6 @@ class ContactsListScreen extends StatelessWidget {
     final contactsStream = FirebaseFirestore.instance
         .collection('contacts')
         .where('ownerId', isEqualTo: currentUser.uid)
-        .orderBy('createdAt', descending: false)
         .snapshots();
 
     return Scaffold(
