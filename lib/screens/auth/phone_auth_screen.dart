@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class PhoneAuthScreen extends StatefulWidget {
@@ -14,13 +15,19 @@ class PhoneAuthScreen extends StatefulWidget {
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   final _phoneCtrl = TextEditingController();
   final _smsCodeCtrl = TextEditingController();
+
   final _formPhoneKey = GlobalKey<FormState>();
   final _formCodeKey = GlobalKey<FormState>();
 
   final _auth = FirebaseAuth.instance;
   final _firestore = FirebaseFirestore.instance;
 
+  // Android / iOS
   String? _verificationId;
+
+  // Web
+  ConfirmationResult? _webConfirmationResult;
+
   bool _isSendingCode = false;
   bool _isVerifyingCode = false;
   bool _codeSent = false;
@@ -68,41 +75,76 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     });
 
     final rawPhone = _phoneCtrl.text.trim();
-
-    // Puedes adaptar esta lógica de normalización a tus necesidades.
-    // Ejemplo: si el usuario pone 10 dígitos, asumimos +52 México.
     String phoneNumber = rawPhone;
+
+    // Normaliza: si son 10 dígitos sin prefijo, asumimos +52 México
     if (!rawPhone.startsWith('+')) {
       if (rawPhone.length == 10) {
         phoneNumber = '+52$rawPhone';
       } else {
-        // Si quieres algo más estricto, puedes manejar aquí otro caso
         phoneNumber = '+$rawPhone';
       }
     }
 
     try {
+      // 🌐 WEB
+      if (kIsWeb) {
+        final result = await _auth.signInWithPhoneNumber(phoneNumber);
+        if (!mounted) return;
+
+        setState(() {
+          _webConfirmationResult = result;
+          _codeSent = true;
+        });
+        _startResendTimer();
+        return;
+      }
+
+      // 🍎 iOS simulador: de momento solo mensaje (para evitar crashes)
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        setState(() {
+          _errorMessage =
+              'La verificación por SMS en iOS simulador requiere configuración '
+              'extra (APNs y dispositivo real).\n\n'
+              'Para esta tarea prueba en Web (Chrome) o en un dispositivo Android.\n\n'
+              'Cuando tengas un iPhone real, aquí activamos verifyPhoneNumber().';
+        });
+        return;
+      }
+
+      // 🤖 Android (y otros)
       await _auth.verifyPhoneNumber(
         phoneNumber: phoneNumber,
         timeout: const Duration(seconds: 60),
         verificationCompleted: (PhoneAuthCredential credential) async {
-          // En algunos dispositivos Android, Firebase puede autocompletar el código.
           try {
             final userCredential = await _auth.signInWithCredential(credential);
-            await _ensureUserDocument(userCredential.user);
+            debugPrint(
+              'Usuario autenticado automáticamente: '
+              '${userCredential.user?.uid}',
+            );
+
+            if (!kIsWeb) {
+              await _ensureUserDocument(userCredential.user);
+            }
+
             _goToNextScreen();
           } catch (e) {
+            if (!mounted) return;
             setState(() {
-              _errorMessage = 'Error al completar verificación automática.';
+              _errorMessage =
+                  'Error al completar la verificación automática. Intenta manualmente.';
             });
           }
         },
         verificationFailed: (FirebaseAuthException e) {
+          if (!mounted) return;
           setState(() {
             _errorMessage = _firebaseErrorMessage(e);
           });
         },
         codeSent: (String verificationId, int? resendToken) {
+          if (!mounted) return;
           setState(() {
             _verificationId = verificationId;
             _codeSent = true;
@@ -110,16 +152,17 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           _startResendTimer();
         },
         codeAutoRetrievalTimeout: (String verificationId) {
-          setState(() {
-            _verificationId = verificationId;
-          });
+          if (!mounted) return;
+          _verificationId = verificationId;
         },
       );
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = _firebaseErrorMessage(e);
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Ocurrió un error inesperado. Intenta nuevamente.';
       });
@@ -134,12 +177,6 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
 
   Future<void> _verifyCode() async {
     if (!_formCodeKey.currentState!.validate()) return;
-    if (_verificationId == null) {
-      setState(() {
-        _errorMessage = 'No se ha enviado ningún código todavía.';
-      });
-      return;
-    }
 
     FocusScope.of(context).unfocus();
     setState(() {
@@ -148,20 +185,45 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     });
 
     try {
-      final credential = PhoneAuthProvider.credential(
-        verificationId: _verificationId!,
-        smsCode: _smsCodeCtrl.text.trim(),
-      );
+      UserCredential userCredential;
 
-      final userCredential = await _auth.signInWithCredential(credential);
+      if (kIsWeb) {
+        if (_webConfirmationResult == null) {
+          setState(() {
+            _errorMessage = 'No se ha enviado ningún código todavía.';
+          });
+          return;
+        }
+
+        userCredential = await _webConfirmationResult!.confirm(
+          _smsCodeCtrl.text.trim(),
+        );
+      } else {
+        if (_verificationId == null) {
+          setState(() {
+            _errorMessage = 'No se ha enviado ningún código todavía.';
+          });
+          return;
+        }
+
+        final credential = PhoneAuthProvider.credential(
+          verificationId: _verificationId!,
+          smsCode: _smsCodeCtrl.text.trim(),
+        );
+
+        userCredential = await _auth.signInWithCredential(credential);
+      }
+
       await _ensureUserDocument(userCredential.user);
-
-      _goToNextScreen();
+      if (mounted) _goToNextScreen();
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = _firebaseErrorMessage(e);
       });
     } catch (e) {
+      if (!mounted) return;
+      debugPrint('Error genérico en _verifyCode: $e');
       setState(() {
         _errorMessage = 'Ocurrió un error al verificar el código.';
       });
@@ -177,32 +239,41 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   Future<void> _ensureUserDocument(User? user) async {
     if (user == null) return;
 
-    final docRef = _firestore.collection('users').doc(user.uid);
-    final doc = await docRef.get();
+    // 👇 IMPORTANTE: para evitar el error "client is offline" en Web
+    if (kIsWeb) {
+      debugPrint(
+        'Saltando Firestore en Web (modo demo). '
+        'El usuario se autenticó pero no se guarda en collection users.',
+      );
+      return;
+    }
 
-    if (!doc.exists) {
-      await docRef.set({
-        'uid': user.uid,
-        'phoneNumber': user.phoneNumber,
-        'emailTec': null, // Se llena después en la pantalla de perfil
-        'displayName': null,
-        'avatarUrl': null,
-        'about': 'Disponible',
-        'role': 'alumno', // por defecto, se puede cambiar en perfil
-        'createdAt': FieldValue.serverTimestamp(),
-        'lastSeen': FieldValue.serverTimestamp(),
-      });
-    } else {
-      // Actualizamos lastSeen sólo por si acaso
-      await docRef.update({'lastSeen': FieldValue.serverTimestamp()});
+    try {
+      final docRef = _firestore.collection('users').doc(user.uid);
+      final doc = await docRef.get();
+
+      if (!doc.exists) {
+        await docRef.set({
+          'uid': user.uid,
+          'phoneNumber': user.phoneNumber,
+          'emailTec': null,
+          'displayName': null,
+          'avatarUrl': null,
+          'about': 'Disponible',
+          'role': 'alumno',
+          'createdAt': FieldValue.serverTimestamp(),
+          'lastSeen': FieldValue.serverTimestamp(),
+        });
+      } else {
+        await docRef.update({'lastSeen': FieldValue.serverTimestamp()});
+      }
+    } catch (e) {
+      // En producción podrías reportar el error, aquí solo lo logeamos.
+      debugPrint('Error en _ensureUserDocument (no bloquea login): $e');
     }
   }
 
   void _goToNextScreen() {
-    // Aquí decides a dónde mandarlo:
-    // - Si quieres que primero llene perfil: '/profileSetup'
-    // - Si ya tiene perfil completo: '/home'
-    // Para simplificar, lo mando a '/home'.
     Navigator.of(context).pushReplacementNamed('/home');
   }
 
@@ -216,8 +287,10 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         return 'La sesión ha expirado. Solicita un nuevo código.';
       case 'invalid-verification-code':
         return 'El código ingresado no es correcto.';
+      case 'network-request-failed':
+        return 'Parece que no hay conexión a Internet.';
       default:
-        return 'Error de autenticación: ${e.message ?? e.code}';
+        return 'Error de autenticación: ${e.code}';
     }
   }
 
@@ -225,6 +298,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     setState(() {
       _codeSent = false;
       _verificationId = null;
+      _webConfirmationResult = null;
       _smsCodeCtrl.clear();
       _errorMessage = null;
     });

@@ -1,13 +1,14 @@
-// TODO Implement this library.
+// lib/features/chats/presentation/screens/chats_list_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart'; // 👈 para kIsWeb
 import 'package:flutter/material.dart';
-import 'package:flutter_tec_chat/profile/profile_screen.dart';
 
-import '../../../../data/models/app_user.dart';
 import 'chat_detail_screen.dart';
 import 'group_create_screen.dart';
 import '../../../../contacts/contacts_list_screen.dart';
+import '../../../../data/models/app_user.dart';
+import '../../../../profile/profile_screen.dart';
 
 class ChatsListScreen extends StatelessWidget {
   const ChatsListScreen({super.key});
@@ -29,6 +30,62 @@ class ChatsListScreen extends StatelessWidget {
 
     final uid = currentUser.uid;
 
+    // 🔒 En Web: NO usamos Firestore (evitamos errores de "client is offline")
+    if (kIsWeb) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Conversaciones'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.contacts),
+              tooltip: 'Contactos',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ContactsListScreen()),
+                );
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.person),
+              tooltip: 'Perfil',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                );
+              },
+            ),
+          ],
+        ),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24.0),
+            child: Text(
+              'En la versión Web de demo no se cargan conversaciones '
+              'reales desde Firestore.\n\n'
+              'Usa la app en un dispositivo Android o iOS real para '
+              'probar los chats en tiempo real.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Crear chats está deshabilitado en la versión Web de demo.',
+                ),
+              ),
+            );
+          },
+          child: const Icon(Icons.group_add),
+        ),
+      );
+    }
+
+    // 📱 Móviles (Android / iOS): Firestore normal
     final chatsStream = FirebaseFirestore.instance
         .collection('chats')
         .where('members', arrayContains: uid)
@@ -61,7 +118,6 @@ class ChatsListScreen extends StatelessWidget {
           ),
         ],
       ),
-
       body: StreamBuilder<QuerySnapshot>(
         stream: chatsStream,
         builder: (context, snapshot) {
@@ -137,7 +193,7 @@ class ChatListItem extends StatelessWidget {
         .map((e) => e.toString())
         .toList(growable: false);
 
-    // Si es grupo, no necesitamos buscar otro usuario específico
+    // Grupo
     if (isGroup) {
       return ListTile(
         leading: const CircleAvatar(child: Icon(Icons.group)),
@@ -165,7 +221,7 @@ class ChatListItem extends StatelessWidget {
       );
     }
 
-    // Chat individual: buscamos el "otro" usuario
+    // Chat individual
     String? otherUid;
     for (final m in members) {
       if (m != currentUid) {
@@ -173,7 +229,6 @@ class ChatListItem extends StatelessWidget {
         break;
       }
     }
-    // En caso extremo de que solo esté el propio uid
     otherUid ??= currentUid;
 
     return FutureBuilder<DocumentSnapshot>(
