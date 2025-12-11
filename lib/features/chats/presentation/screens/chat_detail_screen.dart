@@ -1,10 +1,11 @@
-import 'dart:io';
+// lib/features/chats/presentation/screens/chat_detail_screen.dart
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../../data/models/app_user.dart';
 
@@ -25,165 +26,187 @@ class ChatDetailScreen extends StatefulWidget {
 }
 
 class _ChatDetailScreenState extends State<ChatDetailScreen> {
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+
   final _messageCtrl = TextEditingController();
-  final _scrollController = ScrollController();
+  bool _sending = false;
 
-  bool _sendingText = false;
-  bool _sendingImage = false;
-
-  User? get _currentUser => FirebaseAuth.instance.currentUser;
+  // Cache de usuarios (para mostrar nombres en grupo)
+  final Map<String, AppUser> _usersCache = {};
 
   @override
   void dispose() {
     _messageCtrl.dispose();
-    _scrollController.dispose();
     super.dispose();
   }
 
-  CollectionReference<Map<String, dynamic>> get _messagesRef =>
-      FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId)
-          .collection('messages');
-
-  DocumentReference<Map<String, dynamic>> get _chatRef =>
-      FirebaseFirestore.instance.collection('chats').doc(widget.chatId);
+  Stream<QuerySnapshot<Map<String, dynamic>>> _messagesStream(String chatId) {
+    return _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
 
   Future<void> _sendTextMessage() async {
-    final user = _currentUser;
+    final user = _auth.currentUser;
     if (user == null) return;
 
     final text = _messageCtrl.text.trim();
     if (text.isEmpty) return;
 
-    setState(() => _sendingText = true);
+    setState(() => _sending = true);
 
     try {
-      await _messagesRef.add({
-        'senderId': user.uid,
-        'text': text,
+      final ref = _db
+          .collection('chats')
+          .doc(widget.chatId)
+          .collection('messages')
+          .doc();
+
+      await ref.set({
+        'id': ref.id,
+        'fromId': user.uid,
         'type': 'text',
-        'mediaUrl': null,
+        'text': text,
+        'mediaData': null,
+        'mediaMime': null,
+        'mediaName': null,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      // Actualizamos el resumen del chat
-      await _chatRef.update({
+      await _db.collection('chats').doc(widget.chatId).update({
         'lastMessage': text,
         'lastMessageAt': FieldValue.serverTimestamp(),
       });
 
       _messageCtrl.clear();
-      _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Error al enviar mensaje: $e')));
     } finally {
-      if (mounted) {
-        setState(() => _sendingText = false);
-      }
+      if (mounted) setState(() => _sending = false);
     }
   }
 
-  Future<void> _pickAndSendImage() async {
-    final user = _currentUser;
+  Future<void> _sendImageFromDevice() async {
+    final user = _auth.currentUser;
     if (user == null) return;
 
-    final picker = ImagePicker();
+    // Abrir selector de archivos (imágenes / gif)
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'gif'],
+      withData: true, // importante para web
+    );
+
+    if (result == null || result.files.isEmpty) return;
+
+    final file = result.files.first;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudieron leer los datos del archivo.'),
+        ),
+      );
+      return;
+    }
+
+    // ⚠️ Esto guarda la imagen en base64 en Firestore.
+    // Para una app real con muchas imágenes, lo ideal es usar Firebase Storage.
+    final base64Data = base64Encode(bytes);
+
+    final ext = (file.extension ?? '').toLowerCase();
+    final isGif = ext == 'gif';
+    final type = isGif ? 'gif' : 'image';
+
+    setState(() => _sending = true);
 
     try {
-      final picked = await picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 75,
-      );
+      final ref = _db
+          .collection('chats')
+          .doc(widget.chatId)
+          .collection('messages')
+          .doc();
 
-      if (picked == null) return;
-
-      setState(() => _sendingImage = true);
-
-      final file = File(picked.path);
-
-      final fileName =
-          '${DateTime.now().millisecondsSinceEpoch}_${user.uid}.jpg';
-
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('chats')
-          .child(widget.chatId)
-          .child('images')
-          .child(fileName);
-
-      await ref.putFile(file);
-      final url = await ref.getDownloadURL();
-
-      await _messagesRef.add({
-        'senderId': user.uid,
+      await ref.set({
+        'id': ref.id,
+        'fromId': user.uid,
+        'type': type,
         'text': null,
-        'type': 'image',
-        'mediaUrl': url,
+        'mediaData': base64Data,
+        'mediaName': file.name,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
-      await _chatRef.update({
-        'lastMessage': '📷 Foto',
+      final preview = isGif ? '[Animación]' : '[Imagen]';
+
+      await _db.collection('chats').doc(widget.chatId).update({
+        'lastMessage': preview,
         'lastMessageAt': FieldValue.serverTimestamp(),
       });
-
-      _scrollToBottom();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Error al enviar imagen: $e')));
     } finally {
-      if (mounted) {
-        setState(() => _sendingImage = false);
-      }
+      if (mounted) setState(() => _sending = false);
     }
   }
 
-  void _scrollToBottom() {
-    // El ListView está con reverse: true, así que usamos posición 0
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
+  Future<AppUser?> _loadUser(String uid) async {
+    if (_usersCache.containsKey(uid)) {
+      return _usersCache[uid];
+    }
+    try {
+      final snap = await _db.collection('users').doc(uid).get();
+      if (!snap.exists) return null;
+      final data = snap.data() as Map<String, dynamic>;
+      final user = AppUser.fromMap(data, snap.id);
+      _usersCache[uid] = user;
+      return user;
+    } catch (_) {
+      return null;
     }
   }
 
-  String _buildTitle() {
-    if (widget.isGroup) {
-      // Más adelante puedes cargar el título real desde el doc del chat.
-      return 'Grupo';
-    }
-    final u = widget.otherUser;
-    return u?.displayName ?? u?.emailTec ?? u?.phoneNumber ?? 'Chat';
+  String _displayNameFor(AppUser? user) {
+    if (user == null) return 'User';
+    final name = user.displayName?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    return 'User';
+  }
+
+  void _insertEmoji(String emoji) {
+    final text = _messageCtrl.text;
+    _messageCtrl.text = '$text$emoji';
+    _messageCtrl.selection = TextSelection.fromPosition(
+      TextPosition(offset: _messageCtrl.text.length),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_currentUser == null) {
-      return const Scaffold(
-        body: Center(child: Text('No hay sesión iniciada')),
-      );
-    }
-
-    final messagesStream = _messagesRef
-        .orderBy('createdAt', descending: true)
-        .limit(100)
-        .snapshots();
+    final currentUser = _auth.currentUser;
+    final title = widget.isGroup
+        ? 'Chat de grupo'
+        : (widget.otherUser?.displayName ??
+              widget.otherUser?.emailTec ??
+              'Chat');
 
     return Scaffold(
-      appBar: AppBar(title: Text(_buildTitle())),
+      appBar: AppBar(title: Text(title)),
       body: Column(
         children: [
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: messagesStream,
+              stream: _messagesStream(widget.chatId),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
@@ -193,7 +216,6 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     ),
                   );
                 }
-
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
@@ -203,207 +225,214 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 if (docs.isEmpty) {
                   return const Center(
                     child: Text(
-                      'No hay mensajes.\nEscribe el primero.',
+                      'No hay mensajes todavía.\nEscribe el primero.',
                       textAlign: TextAlign.center,
                     ),
                   );
                 }
 
                 return ListView.builder(
-                  controller: _scrollController,
-                  reverse: true, // Mensajes recientes abajo
+                  reverse: true,
                   itemCount: docs.length,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 8,
-                  ),
                   itemBuilder: (context, index) {
                     final msg = docs[index].data();
-                    final isMe = msg['senderId'] == _currentUser!.uid;
-                    return _MessageBubble(
-                      isMe: isMe,
-                      text: msg['text'] as String?,
-                      type: msg['type'] as String? ?? 'text',
-                      mediaUrl: msg['mediaUrl'] as String?,
-                      createdAt: (msg['createdAt'] as Timestamp?)?.toDate(),
+                    final fromId = msg['fromId'] as String?;
+                    final isMe =
+                        currentUser != null && currentUser.uid == fromId;
+
+                    final type = msg['type'] as String? ?? 'text';
+                    final text = msg['text'] as String?;
+                    final mediaData = msg['mediaData'] as String?;
+                    final ts = msg['createdAt'] as Timestamp?;
+                    final time = ts?.toDate();
+
+                    Widget bubbleContent;
+
+                    if ((type == 'image' || type == 'gif') &&
+                        mediaData != null &&
+                        mediaData.isNotEmpty) {
+                      try {
+                        final Uint8List bytes = base64Decode(mediaData);
+                        bubbleContent = ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.memory(
+                            bytes,
+                            width: 220,
+                            fit: BoxFit.cover,
+                          ),
+                        );
+                      } catch (_) {
+                        bubbleContent = const Text(
+                          'No se pudo mostrar la imagen.',
+                        );
+                      }
+                    } else {
+                      bubbleContent = Text(
+                        text ?? '',
+                        style: const TextStyle(fontSize: 16),
+                      );
+                    }
+
+                    final bubble = Container(
+                      margin: const EdgeInsets.symmetric(
+                        vertical: 4,
+                        horizontal: 8,
+                      ),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: isMe
+                            ? Colors.teal.shade100
+                            : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Nombre del remitente en grupo (sin teléfono)
+                          if (widget.isGroup && !isMe && fromId != null)
+                            FutureBuilder<AppUser?>(
+                              future: _loadUser(fromId),
+                              builder: (context, snap) {
+                                final user = snap.data;
+                                final name = _displayNameFor(user);
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 4.0),
+                                  child: Text(
+                                    name,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          bubbleContent,
+                          if (time != null)
+                            Align(
+                              alignment: Alignment.bottomRight,
+                              child: Text(
+                                '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+
+                    return Align(
+                      alignment: isMe
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: bubble,
                     );
                   },
                 );
               },
             ),
           ),
-          _MessageInputArea(
-            controller: _messageCtrl,
-            sendingText: _sendingText,
-            sendingImage: _sendingImage,
-            onSendText: _sendTextMessage,
-            onSendImage: _pickAndSendImage,
-          ),
-        ],
-      ),
-    );
-  }
-}
 
-/// Burbujas de mensaje (texto o imagen)
-class _MessageBubble extends StatelessWidget {
-  final bool isMe;
-  final String? text;
-  final String type;
-  final String? mediaUrl;
-  final DateTime? createdAt;
+          // Barra inferior
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+              child: Row(
+                children: [
+                  // Emojis rápidos
+                  IconButton(
+                    icon: const Text('😊', style: TextStyle(fontSize: 22)),
+                    onPressed: () {
+                      showModalBottomSheet(
+                        context: context,
+                        showDragHandle: true,
+                        builder: (_) {
+                          return SafeArea(
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(8.0),
+                                child: Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children:
+                                      [
+                                        '😀',
+                                        '😂',
+                                        '😍',
+                                        '👍',
+                                        '🎓',
+                                        '📚',
+                                        '🔥',
+                                        '🤓',
+                                      ].map((e) {
+                                        return InkWell(
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _insertEmoji(e);
+                                          },
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(8.0),
+                                            child: Text(
+                                              e,
+                                              style: const TextStyle(
+                                                fontSize: 24,
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }).toList(),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
 
-  const _MessageBubble({
-    required this.isMe,
-    required this.text,
-    required this.type,
-    required this.mediaUrl,
-    required this.createdAt,
-  });
+                  // Adjuntar imagen / gif desde dispositivo
+                  IconButton(
+                    icon: const Icon(Icons.photo),
+                    onPressed: _sending ? null : _sendImageFromDevice,
+                  ),
 
-  String _formatTime(DateTime? time) {
-    if (time == null) return '';
-    final hh = time.hour.toString().padLeft(2, '0');
-    final mm = time.minute.toString().padLeft(2, '0');
-    return '$hh:$mm';
-  }
+                  Expanded(
+                    child: TextField(
+                      controller: _messageCtrl,
+                      minLines: 1,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.newline,
+                      decoration: const InputDecoration(
+                        hintText: 'Escribe un mensaje',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(24)),
+                        ),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
 
-  @override
-  Widget build(BuildContext context) {
-    final bgColor = isMe ? const Color(0xFFDCF8C6) : Colors.white;
-    final align = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-    final radius = BorderRadius.only(
-      topLeft: const Radius.circular(16),
-      topRight: const Radius.circular(16),
-      bottomLeft: Radius.circular(isMe ? 16 : 0),
-      bottomRight: Radius.circular(isMe ? 0 : 16),
-    );
-
-    Widget content;
-
-    if (type == 'image' && mediaUrl != null) {
-      content = Column(
-        crossAxisAlignment: align,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.network(mediaUrl!, width: 220, fit: BoxFit.cover),
-          ),
-          if (text != null && text!.trim().isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(text!),
-          ],
-          const SizedBox(height: 4),
-          Text(
-            _formatTime(createdAt),
-            style: const TextStyle(fontSize: 10, color: Colors.grey),
-          ),
-        ],
-      );
-    } else {
-      content = Column(
-        crossAxisAlignment: align,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(text ?? '', style: const TextStyle(fontSize: 15)),
-          const SizedBox(height: 4),
-          Text(
-            _formatTime(createdAt),
-            style: const TextStyle(fontSize: 10, color: Colors.grey),
-          ),
-        ],
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-      child: Row(
-        mainAxisAlignment: isMe
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        children: [
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 260),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
-              decoration: BoxDecoration(color: bgColor, borderRadius: radius),
-              child: content,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Barra inferior: input de texto + botones
-class _MessageInputArea extends StatelessWidget {
-  final TextEditingController controller;
-  final bool sendingText;
-  final bool sendingImage;
-  final VoidCallback onSendText;
-  final VoidCallback onSendImage;
-
-  const _MessageInputArea({
-    required this.controller,
-    required this.sendingText,
-    required this.sendingImage,
-    required this.onSendText,
-    required this.onSendImage,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final canSend = !sendingText && controller.text.trim().isNotEmpty;
-
-    return SafeArea(
-      top: false,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Color(0xFFE0E0E0))),
-        ),
-        child: Row(
-          children: [
-            IconButton(
-              icon: sendingImage
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.image),
-              onPressed: sendingImage ? null : onSendImage,
-            ),
-            Expanded(
-              child: TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  hintText: 'Escribe un mensaje',
-                  border: InputBorder.none,
-                ),
-                onChanged: (_) {
-                  // Para redibujar el botón de enviar cuando hay texto/no hay texto
-                  (context as Element).markNeedsBuild();
-                },
+                  IconButton(
+                    icon: _sending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.send),
+                    onPressed: _sending ? null : _sendTextMessage,
+                  ),
+                ],
               ),
             ),
-            IconButton(
-              icon: sendingText
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(canSend ? Icons.send : Icons.mic),
-              onPressed: canSend ? onSendText : null,
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
